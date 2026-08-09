@@ -69,7 +69,7 @@ pub enum HikCameraError {
     MultipleDevices { selector: String, count: usize },
     #[error("The HikCamera SDK returned a null handle")]
     NullHandle,
-    #[error("The HikCamera SDK reference counter is poisoned")]
+    #[error("The HikCamera SDK synchronization state is poisoned")]
     SdkStatePoisoned,
     #[error("{field} contains an interior NUL byte")]
     InvalidString { field: &'static str },
@@ -92,6 +92,16 @@ pub enum HikCameraError {
     RecordingInProgress,
     #[error("Frame has no image data")]
     EmptyFrame,
+    #[error("frame declares {declared} bytes, but its buffer contains only {actual} bytes")]
+    InvalidFrameLength { declared: u64, actual: usize },
+    #[error("the HikCamera SDK reported {reported} output bytes for a {capacity}-byte buffer")]
+    InvalidSdkOutputLength { reported: usize, capacity: usize },
+    #[error("video frame {field} changed from {expected} to {actual}")]
+    VideoFrameMismatch {
+        field: &'static str,
+        expected: u32,
+        actual: u32,
+    },
     #[error("Video output has no frames")]
     EmptyVideo,
     #[error("{field} must be greater than zero")]

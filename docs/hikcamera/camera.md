@@ -78,7 +78,7 @@
     - `Drop` 时会兜底停止采集
     - 调用 `stop()` 可以显式停止采集并取回 `Camera`
   - 取帧和流状态：
-    - `take_frame(&mut self, timeout: Duration) -> Result<Frame>`：在指定超时时间内取一帧，并复制图像数据到 `Frame.data`
+    - `take_frame(&self, timeout: Duration) -> Result<Frame>`：在指定超时时间内取一帧，并复制图像数据到 `Frame.data`
       - 超时时间转换越界时返回 `HikCameraError::ValueOutOfRange`
     - `clear_buffer(&mut self) -> Result<()>`：清空 SDK 内部图像缓存
     - `get_image_count(&self) -> Result<u32>`：查询当前可输出的有效图像数量
@@ -105,6 +105,7 @@
   - 字段：
     - `info: FrameInfo`：一帧图像的元信息
     - `data: Vec<u8>`：原始图像数据，保存、编码、处理或写入视频前不能为空
+  - 交给 SDK 前会验证 `info.frame_len <= data.len()`；不满足时返回 `HikCameraError::InvalidFrameLength`
 
 - `FrameInfo`
   - 一帧图像的元信息，对应 C SDK 的 `MV_FRAME_OUT_INFO_EX`
@@ -145,6 +146,7 @@
 - `ImageWriter`
   - 图片输出器
   - 由 `Stream::save_image()` 或 `Stream::save_image_with()` 创建
+  - 借用创建它的 `Stream`，因此 Writer 存在期间不能停止或关闭该 Stream
   - 方法：
     - `write_frame(&mut self, frame: &Frame) -> Result<()>`：保存传入的这一帧
       - 空帧返回 `HikCameraError::EmptyFrame`
@@ -154,8 +156,10 @@
 - `VideoWriter`
   - 视频输出器
   - 由 `Stream::save_video()` 或 `Stream::save_video_with()` 创建
+  - 借用创建它的 `Stream`，因此 Writer 存在期间不能停止或关闭该 Stream
   - 第一次 `write_frame()` 时根据该帧宽高和像素格式启动底层录像
   - 后续 `write_frame()` 继续写入帧
+  - 后续帧必须保持首帧的宽、高和像素格式，否则返回 `HikCameraError::VideoFrameMismatch`
   - 同一个 `Stream` 同时只能有一个正在写帧的 `VideoWriter`
   - 方法：
     - `write_frame(&mut self, frame: &Frame) -> Result<()>`：写入一帧，首次调用时启动底层录像
@@ -288,7 +292,7 @@ use std::time::Duration;
 
 use hikcamera::{ImageFormat, Rotation, SaveOptions};
 
-let mut stream = camera.stream()?;
+let stream = camera.stream()?;
 let frame = stream.take_frame(Duration::from_secs(1))?;
 let frame = stream.rotate_frame(&frame, Rotation::Angle90)?;
 
@@ -306,7 +310,7 @@ use std::time::{Duration, Instant};
 
 use hikcamera::VideoOptions;
 
-let mut stream = camera.stream()?;
+let stream = camera.stream()?;
 let mut video = stream.save_video_with(
     VideoOptions::new("capture.avi", 30.0).bit_rate(16 * 1024),
 )?;

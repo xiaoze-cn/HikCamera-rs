@@ -63,7 +63,7 @@ fn configure(camera: &mut Camera<'_>) -> hikcamera::Result<()> {
 }
 
 fn take_image(camera: Camera<'_>) -> hikcamera::Result<Camera<'_>> {
-    let mut stream = camera.stream()?;
+    let stream = camera.stream()?;
 
     let frame = stream.take_frame(FRAME_TIMEOUT)?;
     let mut image = stream.save_image(Path::new(IMAGE_PATH))?;
@@ -81,7 +81,7 @@ fn take_image(camera: Camera<'_>) -> hikcamera::Result<Camera<'_>> {
 }
 
 fn take_video(camera: Camera<'_>) -> hikcamera::Result<Camera<'_>> {
-    let mut stream = camera.stream()?;
+    let stream = camera.stream()?;
     let mut video = stream.save_video(Path::new(VIDEO_PATH), 30.0)?;
     let started = Instant::now();
 

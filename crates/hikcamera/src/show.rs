@@ -156,7 +156,7 @@ fn run_show(stream: Stream<'_>, _options: ShowOptions) -> ShowResult<Stream<'_>>
 mod windows {
     use std::ptr;
 
-    use crate::{Frame, HikCameraError, Status, Stream, sys};
+    use crate::{Frame, HikCameraError, Status, Stream, camera::validate_frame, sys};
     use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
     use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::VK_ESCAPE;
@@ -174,7 +174,7 @@ mod windows {
     const RENDER_MODE_D3D: u32 = 1;
     const PIXEL_BGR8: u32 = sys::MvGvspPixelType_PixelType_Gvsp_BGR8_Packed as u32;
 
-    pub(super) fn run_show(mut stream: Stream<'_>, options: ShowOptions) -> ShowResult<Stream<'_>> {
+    pub(super) fn run_show(stream: Stream<'_>, options: ShowOptions) -> ShowResult<Stream<'_>> {
         let timeout = options.timeout;
         let mut preview = Preview::open(&options)?;
 
@@ -303,6 +303,7 @@ mod windows {
         frame: &Frame,
         render_mode: u32,
     ) -> std::result::Result<(), HikCameraError> {
+        validate_frame(frame)?;
         let mut display_info = sys::MV_DISPLAY_FRAME_INFO_EX {
             nWidth: frame.info.width,
             nHeight: frame.info.height,

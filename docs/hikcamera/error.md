@@ -35,8 +35,8 @@
   - SDK 状态和句柄错误：
     - `NullHandle`：`MV_CC_CreateHandle` 返回成功，但输出 handle 仍为空时返回
     - `SdkStatePoisoned`
-      - SDK 初始化/释放引用计数锁被 panic 污染时返回
-      - `HikCamera::new()` 会显式返回这个错误
+      - SDK 全局同步状态被 panic 污染时返回，包括初始化/释放引用计数和设备枚举锁
+      - `HikCamera::new()`、`HikCamera::devices()` 会显式返回这个错误
   - 字符串和节点错误：
     - `InvalidString { field }`
       - 路径、节点名或节点字符串包含 C 字符串不能表示的 NUL 字节时返回
@@ -57,9 +57,12 @@
     - `InvalidFrameRate { field }`：`Camera::take_video()`、`Stream::save_video()`、`VideoOptions` 或 `Fps::Target` 的帧率不是有限正数时返回
     - `InvalidRoi`：`set_roi()` 的宽度或高度为 0 时返回
     - `EmptyFrame`：保存图片、编码图片、图像处理或写入视频前发现 `Frame` 没有图像数据时返回
+    - `InvalidFrameLength { declared, actual }`：帧元数据声明的长度超过实际缓冲区长度时返回，避免 SDK 越界读取
+    - `InvalidSdkOutputLength { reported, capacity }`：SDK 返回的输出长度超过调用方缓冲区容量时返回
   - 视频写入错误：
     - `RecordingInProgress`：同一个 `Stream` 已经有一个 `VideoWriter` 开始录像，又创建另一个视频写入器并写帧时返回
     - `EmptyVideo`：`VideoWriter::finish()` 在没有写入任何帧时返回
+    - `VideoFrameMismatch { field, expected, actual }`：同一次录像中的帧宽、高或像素格式与首帧不一致时返回
   - 方法：
     - `code(&self) -> Option<i32>`：返回 SDK 状态码，Rust 封装层错误返回 `None`
   - Display 输出：

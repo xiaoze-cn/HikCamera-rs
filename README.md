@@ -31,7 +31,7 @@ fn main() -> hikcamera::Result<()> {
     camera.set_exposure(8000.0)?;
     camera.set_gain(3.0)?;
 
-    let mut stream = camera.stream()?;
+    let stream = camera.stream()?;
     let frame = stream.take_frame(TIMEOUT)?;
     let frame = stream.rotate_frame(&frame, Rotation::Angle180)?;
 

@@ -8,13 +8,21 @@ const HIK_CAMERA_LIB: &str = "MvCameraControl";
 
 fn main() {
     println!("cargo:rerun-if-env-changed=LIBCLANG_PATH");
+    println!("cargo:rerun-if-env-changed=HIKCAMERA_MVS_ROOT");
+    println!("cargo:rerun-if-env-changed=HIKCAMERA_MVS_INCLUDE_DIR");
+    println!("cargo:rerun-if-env-changed=HIKCAMERA_MVS_LIB_DIR");
     println!("cargo:rerun-if-env-changed=CONDA_PREFIX");
     println!("cargo:rerun-if-env-changed=PIXI_PROJECT_ROOT");
     println!("cargo:rerun-if-env-changed=PIXI_ENVIRONMENT_NAME");
 
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
     let sdk_dir = sdk_library_dir(&manifest_dir);
-    let include_dir = sdk_dir.join("include").join("hikcamera-mvs");
+    let include_dir = env::var_os("HIKCAMERA_MVS_INCLUDE_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| sdk_dir.join("include").join("hikcamera-mvs"));
+    let lib_dir = env::var_os("HIKCAMERA_MVS_LIB_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| sdk_dir.join("lib"));
     let header = manifest_dir.join("wrapper.h");
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
 
@@ -27,7 +35,6 @@ fn main() {
         ("windows", "x86_64") => {}
         _ => panic!("unsupported target for hikcamera-sys: {target_os}-{target_arch}"),
     }
-    let lib_dir = sdk_dir.join("lib");
     require_dir("HikCamera MVS headers", &include_dir);
     require_dir("HikCamera MVS import libraries", &lib_dir);
     require_file(
@@ -63,6 +70,10 @@ fn main() {
 }
 
 fn sdk_library_dir(manifest_dir: &Path) -> PathBuf {
+    if let Some(root) = env::var_os("HIKCAMERA_MVS_ROOT") {
+        return PathBuf::from(root);
+    }
+
     if let Some(prefix) = env::var_os("CONDA_PREFIX") {
         return PathBuf::from(prefix).join("Library");
     }

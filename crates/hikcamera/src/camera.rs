@@ -1,5 +1,5 @@
 use std::cell::Cell;
-use std::ffi::{CStr, CString, c_void};
+use std::ffi::{CString, c_void};
 use std::marker::PhantomData;
 use std::mem::MaybeUninit;
 use std::path::{Path, PathBuf};
@@ -18,7 +18,7 @@ pub struct Camera<'hik> {
 #[derive(Debug)]
 pub struct Stream<'hik> {
     inner: Option<Rc<CameraInner>>,
-    recording: Rc<Cell<bool>>,
+    recording: Cell<bool>,
     _hik: PhantomData<&'hik HikCamera>,
 }
 
@@ -28,7 +28,7 @@ pub struct Frame {
     pub data: Vec<u8>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct FrameInfo {
     pub width: u32,
     pub height: u32,
@@ -67,17 +67,16 @@ pub type Image = Frame;
 pub type ImageInfo = FrameInfo;
 
 #[derive(Debug)]
-pub struct ImageWriter {
-    inner: Rc<CameraInner>,
+pub struct ImageWriter<'stream, 'hik> {
+    stream: &'stream Stream<'hik>,
     path: PathBuf,
     options: SaveOptions,
 }
 
 #[derive(Debug)]
-pub struct VideoWriter {
-    inner: Rc<CameraInner>,
+pub struct VideoWriter<'stream, 'hik> {
+    stream: &'stream Stream<'hik>,
     options: VideoOptions,
-    recording: Rc<Cell<bool>>,
     started: bool,
     frame_count: u64,
     info: Option<FrameInfo>,
@@ -543,12 +542,25 @@ impl<'hik> Camera<'hik> {
         Ok(BufferInfo { size, alignment })
     }
 
+    /// Registers caller-owned memory for SDK image acquisition.
+    ///
+    /// # Safety
+    ///
+    /// `buffer` must satisfy the size and alignment returned by [`Camera::get_buffer_info`].
+    /// Its allocation must remain valid and must not be accessed while the SDK may write to it,
+    /// until it is unregistered or this camera is closed.
     pub unsafe fn register_buffer(&mut self, buffer: *mut c_void, size: u64) -> Result<()> {
         check(unsafe {
             sys::MV_CC_RegisterBuffer(self.handle(), buffer, size, std::ptr::null_mut())
         })
     }
 
+    /// Unregisters memory previously passed to [`Camera::register_buffer`].
+    ///
+    /// # Safety
+    ///
+    /// `buffer` must be the same live allocation previously registered on this camera, and it
+    /// must not already have been unregistered.
     pub unsafe fn unregister_buffer(&mut self, buffer: *mut c_void) -> Result<()> {
         check(unsafe { sys::MV_CC_UnRegisterBuffer(self.handle(), buffer) })
     }
@@ -592,12 +604,12 @@ impl<'hik> Stream<'hik> {
     fn new(inner: Rc<CameraInner>) -> Self {
         Self {
             inner: Some(inner),
-            recording: Rc::new(Cell::new(false)),
+            recording: Cell::new(false),
             _hik: PhantomData,
         }
     }
 
-    pub fn take_frame(&mut self, timeout: Duration) -> Result<Frame> {
+    pub fn take_frame(&self, timeout: Duration) -> Result<Frame> {
         let mut frame = MaybeUninit::<sys::MV_FRAME_OUT>::zeroed();
         let timeout_ms = timeout_ms(timeout)?;
 
@@ -613,7 +625,9 @@ impl<'hik> Stream<'hik> {
 
         check(unsafe { sys::MV_CC_FreeImageBuffer(self.handle(), &mut frame) })?;
 
-        Ok(Frame { info, data })
+        let frame = Frame { info, data };
+        validate_frame(&frame)?;
+        Ok(frame)
     }
 
     pub fn raw_handle(&self) -> *mut c_void {
@@ -630,32 +644,28 @@ impl<'hik> Stream<'hik> {
         Ok(count)
     }
 
-    pub fn save_image<P: Into<PathBuf>>(&self, path: P) -> Result<ImageWriter> {
-        Ok(ImageWriter::new(
-            self.inner(),
-            path.into(),
-            SaveOptions::default(),
-        ))
+    pub fn save_image<P: Into<PathBuf>>(&self, path: P) -> Result<ImageWriter<'_, 'hik>> {
+        Ok(ImageWriter::new(self, path.into(), SaveOptions::default()))
     }
 
     pub fn save_image_with<P: Into<PathBuf>>(
         &self,
         path: P,
         options: SaveOptions,
-    ) -> Result<ImageWriter> {
-        Ok(ImageWriter::new(self.inner(), path.into(), options))
+    ) -> Result<ImageWriter<'_, 'hik>> {
+        Ok(ImageWriter::new(self, path.into(), options))
     }
 
-    pub fn save_video<P: Into<PathBuf>>(&self, path: P, frame_rate: f32) -> Result<VideoWriter> {
-        VideoWriter::new(
-            self.inner(),
-            self.recording.clone(),
-            VideoOptions::new(path, frame_rate),
-        )
+    pub fn save_video<P: Into<PathBuf>>(
+        &self,
+        path: P,
+        frame_rate: f32,
+    ) -> Result<VideoWriter<'_, 'hik>> {
+        VideoWriter::new(self, VideoOptions::new(path, frame_rate))
     }
 
-    pub fn save_video_with(&self, options: VideoOptions) -> Result<VideoWriter> {
-        VideoWriter::new(self.inner(), self.recording.clone(), options)
+    pub fn save_video_with(&self, options: VideoOptions) -> Result<VideoWriter<'_, 'hik>> {
+        VideoWriter::new(self, options)
     }
 
     pub fn encode_frame(&self, frame: &Frame, options: SaveOptions) -> Result<Vec<u8>> {
@@ -715,13 +725,6 @@ impl<'hik> Stream<'hik> {
             .expect("stream inner state should be present")
     }
 
-    fn inner(&self) -> Rc<CameraInner> {
-        self.inner
-            .as_ref()
-            .expect("stream inner state should be present")
-            .clone()
-    }
-
     fn handle(&self) -> *mut c_void {
         self.inner
             .as_ref()
@@ -745,10 +748,10 @@ impl Drop for Stream<'_> {
     }
 }
 
-impl ImageWriter {
-    fn new(inner: Rc<CameraInner>, path: PathBuf, options: SaveOptions) -> Self {
+impl<'stream, 'hik> ImageWriter<'stream, 'hik> {
+    fn new(stream: &'stream Stream<'hik>, path: PathBuf, options: SaveOptions) -> Self {
         Self {
-            inner,
+            stream,
             path,
             options,
         }
@@ -767,22 +770,17 @@ impl ImageWriter {
     }
 
     fn handle(&self) -> *mut c_void {
-        self.inner.handle.as_ptr()
+        self.stream.handle()
     }
 }
 
-impl VideoWriter {
-    fn new(
-        inner: Rc<CameraInner>,
-        recording: Rc<Cell<bool>>,
-        options: VideoOptions,
-    ) -> Result<Self> {
+impl<'stream, 'hik> VideoWriter<'stream, 'hik> {
+    fn new(stream: &'stream Stream<'hik>, options: VideoOptions) -> Result<Self> {
         validate_frame_rate("video frame rate", options.frame_rate)?;
 
         Ok(Self {
-            inner,
+            stream,
             options,
-            recording,
             started: false,
             frame_count: 0,
             info: None,
@@ -791,8 +789,11 @@ impl VideoWriter {
     }
 
     pub fn write_frame(&mut self, frame: &Frame) -> Result<()> {
+        validate_frame(frame)?;
         if !self.started {
             self.start(frame)?;
+        } else if let Some(expected) = &self.info {
+            validate_video_frame(expected, &frame.info)?;
         }
 
         let mut raw = sys::MV_CC_INPUT_FRAME_INFO_EX {
@@ -800,7 +801,7 @@ impl VideoWriter {
             nWidth: frame.info.width,
             nHeight: frame.info.height,
             pData: frame.data.as_ptr() as *mut _,
-            nDataLen: frame.data.len() as u64,
+            nDataLen: frame.info.frame_len,
             nRes: [0; 8],
         };
 
@@ -836,10 +837,9 @@ impl VideoWriter {
     }
 
     fn start(&mut self, frame: &Frame) -> Result<()> {
-        if self.recording.get() {
+        if self.stream.recording.get() {
             return Err(HikCameraError::RecordingInProgress);
         }
-        validate_frame(frame)?;
 
         let path = path_string(&self.options.path)?;
         let mut param = sys::MV_CC_RECORD_PARAM {
@@ -854,7 +854,7 @@ impl VideoWriter {
         };
 
         check(unsafe { sys::MV_CC_StartRecord(self.handle(), &mut param) })?;
-        self.recording.set(true);
+        self.stream.recording.set(true);
         self.started = true;
         self.info = Some(frame.info.clone());
         self.started_at = Instant::now();
@@ -864,7 +864,7 @@ impl VideoWriter {
     fn stop(&mut self) -> Result<()> {
         if self.started {
             check(unsafe { sys::MV_CC_StopRecord(self.handle()) })?;
-            self.recording.set(false);
+            self.stream.recording.set(false);
             self.started = false;
         }
 
@@ -872,11 +872,11 @@ impl VideoWriter {
     }
 
     fn handle(&self) -> *mut c_void {
-        self.inner.handle.as_ptr()
+        self.stream.handle()
     }
 }
 
-impl Drop for VideoWriter {
+impl Drop for VideoWriter<'_, '_> {
     fn drop(&mut self) {
         let _ = self.stop();
     }
@@ -1491,8 +1491,7 @@ fn encode_image(handle: *mut c_void, image: &Image, options: SaveOptions) -> Res
     };
 
     check(unsafe { sys::MV_CC_SaveImageEx3(handle, &mut param) })?;
-    output.truncate(param.nImageLen as usize);
-    Ok(output)
+    truncate_sdk_output(output, param.nImageLen as usize)
 }
 
 fn convert_image(handle: *mut c_void, image: &Image, pixel_type: u32) -> Result<Image> {
@@ -1516,11 +1515,11 @@ fn convert_image(handle: *mut c_void, image: &Image, pixel_type: u32) -> Result<
     };
 
     check(unsafe { sys::MV_CC_ConvertPixelTypeEx(handle, &mut param) })?;
-    output.truncate(param.nDstLen as usize);
+    let output = truncate_sdk_output(output, param.nDstLen as usize)?;
 
     let mut info = image.info.clone();
     info.pixel_type = pixel_type;
-    info.frame_len = param.nDstLen as u64;
+    info.frame_len = output.len() as u64;
 
     Ok(Image { info, data: output })
 }
@@ -1546,13 +1545,13 @@ fn rotate_image(handle: *mut c_void, image: &Image, rotation: Rotation) -> Resul
     };
 
     check(unsafe { sys::MV_CC_RotateImage(handle, &mut param) })?;
-    output.truncate(param.nDstBufLen as usize);
+    let output = truncate_sdk_output(output, param.nDstBufLen as usize)?;
 
     let mut info = image.info.clone();
     if matches!(rotation, Rotation::Angle90 | Rotation::Angle270) {
         std::mem::swap(&mut info.width, &mut info.height);
     }
-    info.frame_len = param.nDstBufLen as u64;
+    info.frame_len = output.len() as u64;
 
     Ok(Image { info, data: output })
 }
@@ -1582,10 +1581,10 @@ fn reflect_image(
     };
 
     check(unsafe { sys::MV_CC_FlipImage(handle, &mut param) })?;
-    output.truncate(param.nDstBufLen as usize);
+    let output = truncate_sdk_output(output, param.nDstBufLen as usize)?;
 
     let mut info = image.info.clone();
-    info.frame_len = param.nDstBufLen as u64;
+    info.frame_len = output.len() as u64;
 
     Ok(Image { info, data: output })
 }
@@ -1611,10 +1610,10 @@ fn contrast_image(handle: *mut c_void, image: &Image, factor: u32) -> Result<Ima
     };
 
     check(unsafe { sys::MV_CC_ImageContrast(handle, &mut param) })?;
-    output.truncate(param.nDstBufLen as usize);
+    let output = truncate_sdk_output(output, param.nDstBufLen as usize)?;
 
     let mut info = image.info.clone();
-    info.frame_len = param.nDstBufLen as u64;
+    info.frame_len = output.len() as u64;
 
     Ok(Image { info, data: output })
 }
@@ -1639,13 +1638,13 @@ fn hb_decode(handle: *mut c_void, image: &Image, buffer_size: u32) -> Result<Ima
     };
 
     check(unsafe { sys::MV_CC_HB_Decode(handle, &mut param) })?;
-    output.truncate(param.nDstBufLen as usize);
+    let output = truncate_sdk_output(output, param.nDstBufLen as usize)?;
 
     let mut info = image.info.clone();
     info.width = param.nWidth;
     info.height = param.nHeight;
     info.pixel_type = param.enDstPixelType as u32;
-    info.frame_len = param.nDstBufLen as u64;
+    info.frame_len = output.len() as u64;
     info.second_count = param.stFrameSpecInfo.nSecondCount;
     info.cycle_count = param.stFrameSpecInfo.nCycleCount;
     info.cycle_offset = param.stFrameSpecInfo.nCycleOffset;
@@ -1729,12 +1728,49 @@ fn u16_value(value: u32) -> Result<u16> {
     }
 }
 
-fn validate_frame(frame: &Frame) -> Result<()> {
+pub(crate) fn validate_frame(frame: &Frame) -> Result<()> {
     if frame.data.is_empty() || frame.info.frame_len == 0 {
-        Err(HikCameraError::EmptyFrame)
-    } else {
-        Ok(())
+        return Err(HikCameraError::EmptyFrame);
     }
+
+    if frame.info.frame_len > frame.data.len() as u64 {
+        return Err(HikCameraError::InvalidFrameLength {
+            declared: frame.info.frame_len,
+            actual: frame.data.len(),
+        });
+    }
+
+    Ok(())
+}
+
+fn validate_video_frame(expected: &FrameInfo, actual: &FrameInfo) -> Result<()> {
+    for (field, expected, actual) in [
+        ("width", expected.width, actual.width),
+        ("height", expected.height, actual.height),
+        ("pixel type", expected.pixel_type, actual.pixel_type),
+    ] {
+        if expected != actual {
+            return Err(HikCameraError::VideoFrameMismatch {
+                field,
+                expected,
+                actual,
+            });
+        }
+    }
+
+    Ok(())
+}
+
+fn truncate_sdk_output(mut output: Vec<u8>, reported: usize) -> Result<Vec<u8>> {
+    if reported > output.len() {
+        return Err(HikCameraError::InvalidSdkOutputLength {
+            reported,
+            capacity: output.len(),
+        });
+    }
+
+    output.truncate(reported);
+    Ok(output)
 }
 
 fn validate_duration(field: &'static str, duration: Duration) -> Result<()> {
@@ -1786,6 +1822,15 @@ fn uint32_error() -> HikCameraError {
     HikCameraError::ValueOutOfRange { field: "u32 value" }
 }
 
+#[cfg(unix)]
+fn path_string(path: &Path) -> Result<CString> {
+    use std::os::unix::ffi::OsStrExt;
+
+    CString::new(path.as_os_str().as_bytes())
+        .map_err(|_| HikCameraError::InvalidString { field: "path" })
+}
+
+#[cfg(not(unix))]
 fn path_string(path: &Path) -> Result<CString> {
     CString::new(path.to_string_lossy().as_bytes())
         .map_err(|_| HikCameraError::InvalidString { field: "path" })
@@ -1796,8 +1841,92 @@ fn key_string(value: &str, field: &'static str) -> Result<CString> {
 }
 
 fn c_text(bytes: &[std::os::raw::c_char]) -> String {
-    unsafe { CStr::from_ptr(bytes.as_ptr()) }
-        .to_string_lossy()
-        .trim()
-        .to_owned()
+    let end = bytes
+        .iter()
+        .position(|character| *character == 0)
+        .unwrap_or(bytes.len());
+    let bytes = unsafe { std::slice::from_raw_parts(bytes.as_ptr().cast::<u8>(), end) };
+    String::from_utf8_lossy(bytes).trim().to_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::os::raw::c_char;
+
+    use super::*;
+
+    fn frame(data_len: usize, declared_len: u64) -> Frame {
+        Frame {
+            info: FrameInfo {
+                width: 2,
+                height: 2,
+                frame_len: declared_len,
+                ..FrameInfo::default()
+            },
+            data: vec![0; data_len],
+        }
+    }
+
+    #[test]
+    fn frame_length_must_fit_buffer() {
+        assert!(validate_frame(&frame(4, 4)).is_ok());
+        assert!(validate_frame(&frame(4, 3)).is_ok());
+        assert!(matches!(
+            validate_frame(&frame(3, 4)),
+            Err(HikCameraError::InvalidFrameLength {
+                declared: 4,
+                actual: 3
+            })
+        ));
+        assert!(matches!(
+            validate_frame(&frame(0, 0)),
+            Err(HikCameraError::EmptyFrame)
+        ));
+    }
+
+    #[test]
+    fn sdk_output_length_must_fit_buffer() {
+        assert_eq!(truncate_sdk_output(vec![1, 2, 3], 2).unwrap(), [1, 2]);
+        assert!(matches!(
+            truncate_sdk_output(vec![0; 3], 4),
+            Err(HikCameraError::InvalidSdkOutputLength {
+                reported: 4,
+                capacity: 3
+            })
+        ));
+    }
+
+    #[test]
+    fn fixed_c_text_is_bounded() {
+        let terminated = [b'A' as c_char, b'B' as c_char, 0, b'C' as c_char];
+        let unterminated = [b'A' as c_char, b'B' as c_char, b'C' as c_char];
+
+        assert_eq!(c_text(&terminated), "AB");
+        assert_eq!(c_text(&unterminated), "ABC");
+    }
+
+    #[test]
+    fn video_frames_must_keep_their_format() {
+        let expected = FrameInfo {
+            width: 640,
+            height: 480,
+            pixel_type: 1,
+            ..FrameInfo::default()
+        };
+        let matching = expected.clone();
+        let different = FrameInfo {
+            width: 800,
+            ..expected.clone()
+        };
+
+        assert!(validate_video_frame(&expected, &matching).is_ok());
+        assert!(matches!(
+            validate_video_frame(&expected, &different),
+            Err(HikCameraError::VideoFrameMismatch {
+                field: "width",
+                expected: 640,
+                actual: 800
+            })
+        ));
+    }
 }

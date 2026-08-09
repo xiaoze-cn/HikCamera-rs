@@ -50,7 +50,7 @@ fn main() -> hikcamera::Result<()> {
     let device = devices.default()?;
     let camera = device.open()?;
 
-    let mut stream = camera.stream()?;
+    let stream = camera.stream()?;
     let frame = stream.take_frame(Duration::from_secs(1))?;
 
     let mut image = stream.save_image(Path::new("image.bmp"))?;

@@ -1,8 +1,11 @@
 use std::fmt;
 use std::mem::MaybeUninit;
 use std::ptr::{self, NonNull};
+use std::sync::Mutex;
 
 use crate::{Camera, HikCamera, HikCameraError, Result, error::check, sys};
+
+static DEVICE_ENUM_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Clone)]
 pub struct Devices<'hik> {
@@ -104,8 +107,15 @@ pub struct UsbInfo {
 
 impl<'hik> Devices<'hik> {
     pub(crate) fn list(hik: &'hik HikCamera) -> Result<Self> {
+        // The SDK owns this list and reallocates it on every enumeration call.
+        let _enumeration = DEVICE_ENUM_LOCK
+            .lock()
+            .map_err(|_| HikCameraError::SdkStatePoisoned)?;
         let mut list = MaybeUninit::<sys::MV_CC_DEVICE_INFO_LIST>::zeroed();
-        let types = sys::MV_GIGE_DEVICE | sys::MV_USB_DEVICE;
+        let types = sys::MV_GIGE_DEVICE
+            | sys::MV_USB_DEVICE
+            | sys::MV_1394_DEVICE
+            | sys::MV_CAMERALINK_DEVICE;
 
         check(unsafe { sys::MV_CC_EnumDevices(types, list.as_mut_ptr()) })?;
 

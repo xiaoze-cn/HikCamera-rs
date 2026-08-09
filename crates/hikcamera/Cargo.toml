@@ -10,7 +10,7 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
-hikcamera-sys = { path = "../hikcamera-sys" }
+hikcamera-sys = { version = "0.1.2", path = "../hikcamera-sys" }
 
 derive_more = { version = "2", features = ["from"] }
 thiserror = "2"

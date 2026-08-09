@@ -18,6 +18,10 @@ This crate is an implementation detail of the [`hikcamera`](https://docs.rs/hikc
 The HikCamera MVS headers, import libraries, and runtime DLLs are provided by the `hikcamera-mvs` conda package.
 pixi installs that package into `.pixi/envs/default`, and `build.rs` reads headers and import libraries from the active pixi environment.
 
+For an SDK installed elsewhere, set `HIKCAMERA_MVS_ROOT` to a prefix containing
+`include/hikcamera-mvs` and `lib`. `HIKCAMERA_MVS_INCLUDE_DIR` and
+`HIKCAMERA_MVS_LIB_DIR` can override those directories independently.
+
 ## License
 
 The Rust bindings in this crate are MIT-licensed. The HikCamera MVS SDK files remain under the HikCamera MVS SDK license, `LicenseRef-HikCamera-MVS`.
